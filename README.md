@@ -4,34 +4,44 @@
 
 Covers **CVE-2026-126714** (session splice-race RCE), **CVE-2026-109618/109619** (php2shell), and **multi-vector privilege escalation**.
 
-## Tools Overview
+## Core Tools (3-Tool Toolkit)
 
-| Tool | Purpose | Mode | Authorization |
-|------|---------|------|---------------|
-| **phpaftershell-check.php** | Configuration auditor | Defensive (read-only) | Own infrastructure |
-| **phpaftershell-rce.py** | RCE exploit & splice-race attack | Offensive (exploitation) | Authorized testing |
-| **gadget-chain-finder.php** | Detects PHP deserialization gadgets | Offensive (scanning) | Authorized testing |
-| **privesc-research.sh** | 7-vector privilege escalation scanner | Offensive (exploitation) | Own infrastructure |
-| **php2shell.py** | Session poisoning probe (third-party) | Offensive (probing) | Authorized testing |
-| **scan-servers.sh** | Multi-server checker via SSH | Defensive (read-only) | Own infrastructure |
+| Tool | Purpose | Mode |
+|------|---------|------|
+| **phpaftershell-check.php** | Configuration auditor | Defensive (read-only) |
+| **phpaftershell-rce.py** | RCE exploit & splice-race attack | Offensive |
+| **privesc-research.sh** | 7-vector privilege escalation | Offensive |
+
+**Additional tools archived in `archive/` directory:**
+- `gadget-chain-finder.php` — PHP deserialization gadget scanner (used by RCE internally)
+- `php2shell.py` — Third-party session poisoning probe tool
+- `scan-servers.sh` — Multi-server batch checker via SSH
 
 ## Quick Start
 
-**Defensive (Safe):**
+**Defensive Audit:**
 ```bash
-php phpaftershell-check.php                    # CLI check
-./scan-servers.sh user@host1 user@host2       # Multi-server audit
+php phpaftershell-check.php                    # Check local PHP config
+php phpaftershell-check.php | grep VERDICT    # Show verdict only
 ```
 
-**Offensive (Authorized Testing):**
+**Offensive Testing (Authorized):**
 ```bash
-python3 phpaftershell-rce.py --target http://host --check-only         # Detect
-python3 phpaftershell-rce.py --target http://host --exploit --yes-execute --command id  # Exploit
-./privesc-research.sh --dry-run                # Scan privilege escalation vectors
-./privesc-research.sh --auto-exploit           # Drop to root shell
+# 1. Detect CVE-2026-126714 vulnerability
+python3 phpaftershell-rce.py --target http://host --check-only
+
+# 2. Exploit RCE if vulnerable
+python3 phpaftershell-rce.py --target http://host \
+  --exploit --yes-execute --command "id"
+
+# 3. Scan for privilege escalation vectors
+./privesc-research.sh --dry-run                # List exploitable vectors
+
+# 4. Escalate to root (if vector found)
+./privesc-research.sh --auto-exploit
 ```
 
-**Run all tools only against systems you own or are explicitly authorized to test.**
+**Authorization required:** Run only against systems you own or are explicitly authorized to test.
 
 ## phpaftershell-check.php (defensive auditor)
 
@@ -249,28 +259,6 @@ Detects and exploits gadget chains in:
 
 See [EXPLOIT_TESTING.md](EXPLOIT_TESTING.md) for detailed testing procedures.
 
-## gadget-chain-finder.php (PHP deserialization gadget scanner)
-
-**Detects available PHP object deserialization gadget chains.**
-
-Scans loaded PHP libraries and identifies exploitable classes:
-- Maps entry points (`__destruct`, `__wakeup`, `__call`)
-- Identifies unsafe call chains leading to code execution
-- JSON output for framework integration
-
-```bash
-# Basic scan
-php gadget-chain-finder.php
-
-# JSON output for tooling
-php gadget-chain-finder.php --json
-
-# Deep scan of all loaded classes
-php gadget-chain-finder.php --deep
-```
-
-Used by `phpaftershell-rce.py` to automatically detect available exploitation paths.
-
 ## privesc-research.sh (Privilege escalation research & exploit)
 
 **Comprehensive 7-vector privilege escalation scanner and exploit.**
@@ -324,9 +312,14 @@ grep EXPLOITABLE /tmp/privesc_research_*.log
 
 ## License
 
-- `phpaftershell-check.php`, `scan-servers.sh`, `VECTOR.md`: GPL-3.0 (see [LICENSE](LICENSE))
-- `phpaftershell-rce.py`, `gadget-chain-finder.php`, `privesc-research.sh`: GPL-3.0 (see [LICENSE](LICENSE))
-- `php2shell.py`: Third-party, upstream author's terms (see file header)
+**Core Toolkit:**
+- `phpaftershell-check.php`, `phpaftershell-rce.py`, `privesc-research.sh`: **GPL-3.0** (see [LICENSE](LICENSE))
+- `VECTOR.md`, `EXPLOIT_TESTING.md`: **GPL-3.0** (see [LICENSE](LICENSE))
+
+**Archive Directory (`archive/`):**
+- `gadget-chain-finder.php`: **GPL-3.0** (reference tool)
+- `scan-servers.sh`: **GPL-3.0** (batch checker)
+- `php2shell.py`: Third-party tool, upstream author's terms (see file header)
 
 ## Reference
 
