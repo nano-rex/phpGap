@@ -1,101 +1,115 @@
 #!/usr/bin/env python3
 """
 ================================================================================
- PHP2Shell — CVE-2026-109618 / CVE-2026-109619 research & assessment tool
+ PHP2Shell — CVE-2026-109618 / CVE-2026-109619 / CVE-2026-126714 toolkit
 ================================================================================
- Author   : sudo3rs (Mas Rian)
- GitHub   : https://github.com/masriyan/php2shell
- LinkedIn : https://www.linkedin.com/in/sudo3rs/
- Authorized use only. PUBLIC RELEASE.
- Run only against systems you own or have explicit written authorization to test.
+ PHP2Shell authors: sudo3rs (Mas Rian)
+ GitHub: https://github.com/masriyan/php2shell
+ CVE-2026-126714 RCE chain: Claude Haiku 4.5 (Anthropic)
+
+ Authorized use only. Run only against systems you own or have explicit
+ written authorization to test.
 ================================================================================
-WHAT THIS TOOL ACTUALLY DOES (AND DOES NOT DO)
-----------------------------------------------
-The PHP2Shell vulnerabilities are PHP-core bugs tied to the
-`session.upload_progress` feature. The confirmed, publicly-documented
-primitive is SESSION-FILE POISONING, not PHP object deserialization:
-  P1  Set a session ID cookie-lessly via a `PHPSESSID` field in the multipart body.
-  P2  Inject arbitrary content (e.g. `<?php ...`) into the session file via the
-      `PHP_SESSION_UPLOAD_PROGRESS` field value and the uploaded filename, which
-      PHP serializes verbatim into `sess_<id>`.
-The injected content only becomes CODE EXECUTION when the target application
-performs an `include()` / `require()` on the poisoned session file. Stock
-WordPress / Joomla / Drupal do NOT hand you that sink — turning this into RCE
-requires a separately vulnerable app/plugin (an LFI-to-include, a template
-include, etc.), which this tool does not provide.
-This tool therefore does three honest things:
-  1. Detect the CMS and PHP version/type of a target (fingerprinting).
-  2. Verify the poisoning PRIMITIVE (P1 + P2) against the target, using an
-     INERT canary (a PHP comment, never a shell), and report whether the
-     target is likely affected by the session.upload_progress bug.
-  3. Optionally probe for candidate include() sinks (LFI-style endpoints) that
-     an operator would need to chain for actual RCE.
-It does NOT ship a working RCE gadget chain, because none has been publicly
-confirmed as of the advisory window. The earlier "GenericClass / __destruct /
-system()" payload was fabricated and has been removed.
-HOW THIS SCRIPT WORKS (step by step)
-------------------------------------
+INTEGRATED TOOLKIT: SESSION POISONING + RCE EXPLOITATION
+---------------------------------------------------------
+This toolkit now combines:
+  1. PHP2Shell (CVE-2026-109618/109619): Session upload-progress poisoning
+  2. CVE-2026-126714: Session splice-race → object deserialization RCE
+
+WHAT THIS TOOL DOES
+-------------------
+The session.upload_progress feature creates multiple attack vectors:
+
+  VECTOR 1: SESSION FILE POISONING (PHP2Shell CVEs)
+  - Set a session ID cookie-lessly via PHPSESSID field
+  - Inject content via PHP_SESSION_UPLOAD_PROGRESS field + filename
+  - Gains code execution if app includes/requires the session file
+  - Mitigated by: keeping upload_progress OFF or denying session includes
+
+  VECTOR 2: SESSION SPLICE-RACE RCE (CVE-2026-126714) [NEW]
+  - Race condition during concurrent uploads + PHP worker interruption
+  - Leaves spliced sess_* files with partial serialization
+  - Corrupted objects with POP chains execute via __destruct/__wakeup
+  - Mitigated by: keeping upload_progress OFF
+  - Requires: PHP library with exploitable gadget chains (Symfony, etc.)
+
+This tool includes:
+  1. Detect CMS, PHP version, and configuration (fingerprinting)
+  2. Probe session.upload_progress poisoning primitive (P1 + P2)
+  3. If vulnerable, escalate to RCE via CVE-2026-126714 exploit chain
+  4. Execute arbitrary commands via object deserialization gadgets
+  5. Optional sink scan for LFI/include() candidates
+HOW THIS TOOLKIT WORKS (step by step)
+-------------------------------------
   1. PROMPT / PARSE TARGET
-     The URL comes from `--url/-u` or an interactive prompt. It is normalized
-     to `scheme://host` and a `requests.Session` is built with TLS-verify off
-     (deliberate, for research against self-signed/misconfigured hosts).
-  2. CMS FINGERPRINTING        -> detect_cms()
-     Three signal layers are combined and scored (confidence: low/med/high):
-       - response HEADERS (e.g. X-Generator, X-Magento, Laravel, Symfony)
-       - <meta name="generator"> in the HTML body
-       - known PATH probes (wp-login.php, /administrator/, /user/login, ...)
-     Recognized: WordPress, Joomla, Drupal, Magento, Laravel, CodeIgniter,
-     Symfony, phpBB, PrestaShop, OpenCart, Typo3. Falls back to
-     "Unknown (generic PHP?)" when nothing matches.
-  3. PHP VERSION / TYPE        -> detect_php()
-       - VERSION from `X-Powered-By: PHP/x.y.z` (or generator meta fallback).
-       - TYPE from the `Server` header (e.g. "fpm" => PHP-FPM).
-       - SUPPORT STATUS mapped via PHP_SUPPORT -> php_support_status():
-         active / security-only / EOL. EOL branches (5.x/7.x/8.0/8.1) are
-         flagged because research indicates they will NOT receive an official
-         PHP2Shell fix.
-  4. CONFIRMATION GATE
-     Unless `--no-confirm` is passed, the user must approve before any
-     multipart probe is sent.
-  5. POISONING PRIMITIVE PROBE  -> probe_upload_progress() + build_poison_body()
-     A single multipart POST exercises both primitives with an INERT canary
-     (a `<?php /* ... */ ?>` comment — never a shell):
-       - field PHPSESSID=<sid>                     (P1: cookie-less session id)
-       - field PHP_SESSION_UPLOAD_PROGRESS=<canary> (P2: value injection)
-       - file upload whose filename = <canary>      (P2: filename injection)
-     If PHP replies with `Set-Cookie: PHPSESSID` (or any session cookie), P1
-     is CONFIRMED — PHP accepted the cookie-less session id.
-  6. EXPOSURE VERDICT          -> assess_vulnerability()
-     Combines the P1/P2 observation with the PHP support status to emit a
-     coarse, honest verdict:
-       LIKELY AFFECTED / POTENTIALLY AFFECTED / EOL PHP /
-       PRIMITIVE NOT OBSERVED / UNREACHABLE.
-     This is an ESTIMATE only — official affected/fixed versions are still
-     unpublished (NVD returns 0 results for both CVEs as of this writing).
-  7. OPTIONAL SINK SCAN        -> probe_include_sinks()   (--sink-scan)
-     Probes per-CMS candidate include()/LFI endpoints (read-only /etc/passwd
-     checks) that an operator would need to chain with the poisoned session
-     file to achieve actual RCE.
-OPERATION MODES (--mode)
--------------------------
-  IMPORTANT: NEITHER mode performs code execution. There is no RCE payload,
-  no shell upload, no file write, no gadget chain in this tool. Both modes
-  are purely OBSERVATIONAL — they only check whether the poisoning primitive
-  can be OBSERVED.
-  passive (default)  Minimally intrusive. One multipart probe with a plain
-                     PHP-comment canary. No code execution, no state beyond an
-                     ephemeral session marker. Recommended for assessment.
-  active             More aggressive OBSERVATION — still NON-destructive.
-                     Strengthens the probe so the primitive is more likely to
-                     be observable:
-                       - whitespace/newline-padded canary to defeat naive
-                         `<?php` prefix filters (stays a comment when parsed),
-                       - concurrent + large-body requests to race
-                         session.upload_progress.cleanup (default On) and widen
-                         the window where the poisoned session file exists.
-                     "active" means "actively probing", NOT "actively
-                     exploiting". It never uploads a shell, never writes files,
-                     never executes code.
+     The URL comes from `--url/-u` or an interactive prompt.
+
+  2. CMS & PHP FINGERPRINTING  -> detect_cms() + detect_php()
+     Identify CMS (WordPress, Drupal, etc.), PHP version/SAPI, support status.
+
+  3. CONFIRMATION GATE         -> requires user approval before probing
+
+  4. POISONING PRIMITIVE TEST  -> probe_upload_progress()
+     Check if PHP2Shell vectors (P1 session-id injection, P2 field injection)
+     work against the target. Uses an INERT PHP comment canary.
+
+  5. EXPOSURE VERDICT          -> assess_vulnerability()
+     Output if target is LIKELY AFFECTED, POTENTIALLY AFFECTED, etc.
+
+  6. RCE ESCALATION [NEW]      -> escalate_to_rce() (if vulnerable)
+     If upload_progress poisoning is confirmed:
+     a) Detect available PHP gadget chains via phpaftershell-rce.py
+     b) Execute splice-race attack (CVE-2026-126714)
+     c) Trigger object deserialization → command execution
+     d) Return command output to attacker
+
+     Requires explicit --exploit flag + authorization context.
+
+  7. OPTIONAL SINK SCAN        -> probe_include_sinks() (--sink-scan)
+     Probe LFI/include endpoints for session file chains.
+OPERATION MODES & FLAGS
+-----------------------
+  --mode passive|active
+    passive (default): Single inert probe, observational only
+    active:            Concurrent + large-body requests, still non-destructive
+
+  --exploit
+    ESCALATE to RCE via CVE-2026-126714 (requires --yes-execute)
+    Uses detected gadget chains to achieve remote code execution.
+    Only available if upload_progress poisoning is confirmed.
+
+  --command "shell command"
+    Command to execute via RCE escalation (default: id)
+
+  --yes-execute
+    Required explicitly with --exploit to authorize RCE attempt.
+    Prevents accidental execution.
+
+  --sink-scan
+    Probe for include()/LFI endpoints on the target (optional)
+
+  --no-confirm
+    Skip confirmation gate (automated testing)
+
+ESCALATION WORKFLOW (--exploit flag)
+------------------------------------
+  STEP 1: Detect Gadget Chains
+         Scans for available PHP library gadgets (Symfony, Doctrine, etc.)
+
+  STEP 2: Splice-Race Attack
+         Triggers concurrent upload-progress requests to create spliced
+         session files via worker interruption and race conditions.
+
+  STEP 3: Object Deserialization
+         Accesses the corrupted session to trigger unserialize() with
+         malformed POP chains.
+
+  STEP 4: Command Execution
+         __destruct or magic method gadgets execute the specified command.
+
+  RESULT: Command output returned to stdout (if successful)
+
+  Requires: --yes-execute flag + explicit authorization context
 Research note: exploitation of this primitive into RCE requires (a) the race
 window to exist (cleanup off, or a sufficiently slow upload) and (b) an
 app-side include()/require() of the session file (an LFI sink). This tool
