@@ -472,9 +472,12 @@ def main():
             print(f"    - {e}")
 
         if result['vulnerable']:
-            print("\n[!] Target appears VULNERABLE to CVE-2026-126714")
+            print("\n[!] 🔴 VULNERABLE - upload_progress is enabled!")
+        elif any('vulnerable but upload_progress is disabled' in e for e in result['evidence']):
+            print("\n[!] 🟡 MITIGATED - PHP is vulnerable but upload_progress disabled")
+            print("[+] Target is SAFE (mitigation in place)")
         else:
-            print("\n[+] Target does not appear vulnerable (or detection inconclusive)")
+            print("\n[+] 🟢 SAFE - No exploitable vulnerabilities detected")
         return
 
     if args.exploit:
