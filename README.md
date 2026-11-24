@@ -1,9 +1,26 @@
-# phpaftershell-check
+# phpGap — PHP session upload-progress toolkit
+
+Tools for the PHP `session.upload_progress` session-file bug (*phpaftershell*),
+tracked as **CVE-2026-126714** and, in the php2shell research line,
+**CVE-2026-109618 / CVE-2026-109619**:
+
+- **`phpaftershell-check.php`** — our own **read-only** *defensive* auditor: it
+  tells you whether a PHP server you run matches the preconditions of the bug.
+  Config/version only. **Not an exploit** — no splice race, no payloads, changes
+  nothing. (Documented first, below.)
+- **`php2shell.py`** — a **third-party** *offensive* assessment/probe tool that
+  actively probes a remote target. Vendored here; see
+  [php2shell (third-party probe tool)](#php2shell-third-party-probe-tool).
+
+Run **either** tool only against systems you own or are explicitly authorised to
+test.
+
+## phpaftershell-check.php (defensive auditor)
 
 A small, **read-only** auditor that tells you whether a PHP server matches the
 preconditions of the *phpaftershell* session upload-progress bug
-(**CVE-2026-126714**, and the earlier php2shell / upload-progress research by
-Yuhang Wu).
+(**CVE-2026-126714 / CVE-2026-109618 / CVE-2026-109619**, the upload-progress
+research line — originally documented by Yuhang Wu).
 
 It checks configuration and version only. **It is not an exploit** — it does not
 attempt the session-file splice race, sends no payloads, and changes nothing.
@@ -37,8 +54,8 @@ reorders the truncate/write.
 It's a single PHP file, nothing to build:
 
 ```bash
-git clone https://github.com/nano-rex/phpaftershell-check.git
-cd phpaftershell-check
+git clone https://github.com/nano-rex/phpGap.git
+cd phpGap
 ```
 
 ## Use
@@ -144,9 +161,53 @@ any PHP upgrade or php.ini change.
   `PHP_VERSION`, so the version check is advisory — the config check is what
   decides exposure.
 
+## php2shell (third-party probe tool)
+
+`php2shell.py` is **not ours**. It is a public-release research tool by
+**sudo3rs (Mas Rian)**, vendored here unmodified for convenience:
+
+- Upstream: `github.com/masriyan/php2shell` — the live repo currently returns
+  **404** (removed, renamed, or made private); an archived copy exists on the
+  Wayback Machine (snapshot `20261021203530`).
+- Author: sudo3rs / Mas Rian — <https://www.linkedin.com/in/sudo3rs/>
+- Released by its author as a **public release, authorised use only**.
+
+Unlike `phpaftershell-check.php` (which only reads *your own* server's config),
+php2shell **actively probes a remote target you point it at**. Per its own
+documentation it:
+
+- fingerprints the CMS and PHP version/type of a URL you give it;
+- verifies the session-file **poisoning primitive** — a cookie-less `PHPSESSID`
+  form field (P1) plus `PHP_SESSION_UPLOAD_PROGRESS` value/filename injection
+  (P2) — using an **inert canary** (a `<?php /* … */ ?>` comment, never a
+  shell);
+- optionally (`--sink-scan`) enumerates candidate `include()`/LFI sinks that an
+  operator would need to chain for actual code execution.
+
+It references **CVE-2026-109618 / CVE-2026-109619**. By its author's account it
+is **not a weaponised exploit**: it performs no code execution, uploads no
+shell, writes no files, and ships no gadget chain — it only *observes* whether
+the poisoning primitive is present. Two modes:
+
+- `passive` (default) — one multipart probe with a PHP-comment canary;
+- `active` — more aggressive *observation* (padded canary, concurrent/large
+  requests to widen the race window). "Active" means actively *probing*, not
+  actively *exploiting*.
+
+```bash
+python3 php2shell.py --url https://a-target-you-are-authorised-to-test.example
+```
+
+> ⚠️ **Authorisation required.** Active remote probing of systems you do not own
+> or lack explicit written permission to test is illegal in many jurisdictions.
+> This repository vendors the tool as-is and does **not** extend it toward
+> exploitation.
+
 ## License
 
-GPL-3.0 (see [LICENSE](LICENSE)).
+`phpaftershell-check.php`, `scan-servers.sh`, `VECTOR.md` and this README:
+GPL-3.0 (see [LICENSE](LICENSE)). `php2shell.py` is third-party and remains
+under its upstream author's terms.
 
 ## Reference
 
