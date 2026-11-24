@@ -1,19 +1,37 @@
-# phpGap — PHP session upload-progress toolkit
+# phpGap — PHP session upload-progress RCE & privilege escalation toolkit
 
-Tools for the PHP `session.upload_progress` session-file bug (*phpaftershell*),
-tracked as **CVE-2026-126714** and, in the php2shell research line,
-**CVE-2026-109618 / CVE-2026-109619**:
+**Complete toolkit for authorized security research on PHP session upload-progress vulnerabilities and Linux privilege escalation.**
 
-- **`phpaftershell-check.php`** — our own **read-only** *defensive* auditor: it
-  tells you whether a PHP server you run matches the preconditions of the bug.
-  Config/version only. **Not an exploit** — no splice race, no payloads, changes
-  nothing. (Documented first, below.)
-- **`php2shell.py`** — a **third-party** *offensive* assessment/probe tool that
-  actively probes a remote target. Vendored here; see
-  [php2shell (third-party probe tool)](#php2shell-third-party-probe-tool).
+Covers **CVE-2026-126714** (session splice-race RCE), **CVE-2026-109618/109619** (php2shell), and **multi-vector privilege escalation**.
 
-Run **either** tool only against systems you own or are explicitly authorised to
-test.
+## Tools Overview
+
+| Tool | Purpose | Mode | Authorization |
+|------|---------|------|---------------|
+| **phpaftershell-check.php** | Configuration auditor | Defensive (read-only) | Own infrastructure |
+| **phpaftershell-rce.py** | RCE exploit & splice-race attack | Offensive (exploitation) | Authorized testing |
+| **gadget-chain-finder.php** | Detects PHP deserialization gadgets | Offensive (scanning) | Authorized testing |
+| **privesc-research.sh** | 7-vector privilege escalation scanner | Offensive (exploitation) | Own infrastructure |
+| **php2shell.py** | Session poisoning probe (third-party) | Offensive (probing) | Authorized testing |
+| **scan-servers.sh** | Multi-server checker via SSH | Defensive (read-only) | Own infrastructure |
+
+## Quick Start
+
+**Defensive (Safe):**
+```bash
+php phpaftershell-check.php                    # CLI check
+./scan-servers.sh user@host1 user@host2       # Multi-server audit
+```
+
+**Offensive (Authorized Testing):**
+```bash
+python3 phpaftershell-rce.py --target http://host --check-only         # Detect
+python3 phpaftershell-rce.py --target http://host --exploit --yes-execute --command id  # Exploit
+./privesc-research.sh --dry-run                # Scan privilege escalation vectors
+./privesc-research.sh --auto-exploit           # Drop to root shell
+```
+
+**Run all tools only against systems you own or are explicitly authorized to test.**
 
 ## phpaftershell-check.php (defensive auditor)
 
@@ -203,12 +221,115 @@ python3 php2shell.py --url https://a-target-you-are-authorised-to-test.example
 > This repository vendors the tool as-is and does **not** extend it toward
 > exploitation.
 
+## phpaftershell-rce.py (CVE-2026-126714 RCE exploit)
+
+**Complete exploit for CVE-2026-126714 session splice-race RCE.**
+
+Performs the full attack chain:
+1. **Splice-race attack** — concurrent upload-progress requests + worker interruption
+2. **POP gadget chain** — builds serialized objects targeting installed PHP libraries
+3. **Object deserialization** — triggers `unserialize()` on malformed session data
+4. **Code execution** — executes arbitrary commands via `__destruct` or magic methods
+
+```bash
+# Safe detection mode (no exploitation)
+python3 phpaftershell-rce.py --target http://target.com --check-only
+
+# Exploit mode (requires explicit authorization)
+python3 phpaftershell-rce.py --target http://target.com \
+  --exploit --command "id" --yes-execute
+```
+
+Detects and exploits gadget chains in:
+- Symfony (Process, EventDispatcher)
+- Doctrine (ORM, Collections)
+- Laravel (Foundation, Support)
+- Monolog (Handler, Processor)
+- And other installed PHP libraries
+
+See [EXPLOIT_TESTING.md](EXPLOIT_TESTING.md) for detailed testing procedures.
+
+## gadget-chain-finder.php (PHP deserialization gadget scanner)
+
+**Detects available PHP object deserialization gadget chains.**
+
+Scans loaded PHP libraries and identifies exploitable classes:
+- Maps entry points (`__destruct`, `__wakeup`, `__call`)
+- Identifies unsafe call chains leading to code execution
+- JSON output for framework integration
+
+```bash
+# Basic scan
+php gadget-chain-finder.php
+
+# JSON output for tooling
+php gadget-chain-finder.php --json
+
+# Deep scan of all loaded classes
+php gadget-chain-finder.php --deep
+```
+
+Used by `phpaftershell-rce.py` to automatically detect available exploitation paths.
+
+## privesc-research.sh (Privilege escalation research & exploit)
+
+**Comprehensive 7-vector privilege escalation scanner and exploit.**
+
+Scans for and exploits all major privilege escalation vectors:
+
+1. **Kernel** — Detects vulnerable kernel versions (CVE-2021-22555, CVE-2016-5195, Meltdown/Spectre)
+2. **Sudo** — NOPASSWD entries, wildcards, command injection
+3. **SUID** — Writable SUID binaries, exploitable programs
+4. **Capabilities** — CAP_SYS_ADMIN, CAP_NET_ADMIN, etc.
+5. **Container/VM** — /proc/sysrq-trigger, /dev/mem escape routes
+6. **Weak Permissions** — World-writable PATH files, /tmp staging
+7. **Cron Jobs** — Writable cron scripts executed by root
+
+```bash
+# Safe scanning (no exploitation)
+./privesc-research.sh --dry-run --log findings.log
+
+# Auto-escalate to root (if vulnerable)
+./privesc-research.sh --auto-exploit
+
+# Log findings for research documentation
+./privesc-research.sh --log /tmp/research.log
+```
+
+**Output:**
+- Lists all exploitable privilege escalation vectors
+- Identifies which vector is most reliable
+- Optionally escalates automatically to root shell
+- Logs all findings with timestamps for research documentation
+
+## Workflow: Complete Exploitation Chain
+
+**Scenario: Authorized security research on own VPS1**
+
+```bash
+# 1. Detect PHP vulnerabilities
+python3 phpaftershell-rce.py --target https://vps1.local --check-only
+
+# 2. If vulnerable to CVE-2026-126714, attempt RCE
+python3 phpaftershell-rce.py --target https://vps1.local \
+  --exploit --command "whoami" --yes-execute
+
+# 3. If RCE achieves www-data, escalate to root
+./privesc-research.sh --dry-run                # First scan
+./privesc-research.sh --auto-exploit          # Then escalate
+
+# 4. Document findings for defensive hardening
+grep EXPLOITABLE /tmp/privesc_research_*.log
+```
+
 ## License
 
-`phpaftershell-check.php`, `scan-servers.sh`, `VECTOR.md` and this README:
-GPL-3.0 (see [LICENSE](LICENSE)). `php2shell.py` is third-party and remains
-under its upstream author's terms.
+- `phpaftershell-check.php`, `scan-servers.sh`, `VECTOR.md`: GPL-3.0 (see [LICENSE](LICENSE))
+- `phpaftershell-rce.py`, `gadget-chain-finder.php`, `privesc-research.sh`: GPL-3.0 (see [LICENSE](LICENSE))
+- `php2shell.py`: Third-party, upstream author's terms (see file header)
 
 ## Reference
 
-Yuhang Wu, *phpaftershell* — https://depthfirst.com/research/phpaftershell
+- Yuhang Wu, *phpaftershell* — https://depthfirst.com/research/phpaftershell
+- CVE-2026-126714 Analysis — See [VECTOR.md](VECTOR.md)
+- Exploitation Guide — See [EXPLOIT_TESTING.md](EXPLOIT_TESTING.md)
