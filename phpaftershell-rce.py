@@ -126,8 +126,17 @@ class CVE202612671Exploit:
         except Exception as e:
             result['evidence'].append(f"Version check failed: {str(e)}")
 
-        # Determine vulnerability
-        result['vulnerable'] = result['upload_progress_enabled'] and any('vulnerable' in e.lower() or 'exposed' in e.lower() for e in result['evidence'])
+        # Determine vulnerability status
+        # Vulnerable if: upload_progress ON + vulnerable PHP version
+        # At risk if: vulnerable PHP version but upload_progress OFF (mitigated)
+
+        has_vulnerable_php = any('8.1' in e or '8.0' in e or '8.2' in e or '8.3' in e or '8.4' in e for e in result['evidence'])
+
+        if result['upload_progress_enabled']:
+            result['vulnerable'] = True
+        elif has_vulnerable_php:
+            result['evidence'].append("PHP version is vulnerable but upload_progress is disabled (MITIGATED)")
+            result['vulnerable'] = False  # Safe because mitigation is in place
 
         return result
 
