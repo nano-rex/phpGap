@@ -126,6 +126,43 @@ class CVE202612671Exploit:
         except Exception as e:
             result['evidence'].append(f"Version check failed: {str(e)}")
 
+        # Test 4: Parse HTML output from index.php for PHP config
+        try:
+            resp = self.session.get(f"{self.target_url}/index.php")
+            if resp.status_code == 200:
+                text = resp.text.lower()
+
+                # Extract PHP version
+                if 'php version:' in text:
+                    start = text.find('php version:')
+                    end = text.find('\n', start)
+                    version_line = text[start:end]
+                    result['evidence'].append(f"Found: {version_line}")
+
+                    # Check if vulnerable version
+                    for v in ['8.1', '8.0', '8.2', '8.3', '8.4', '7.4']:
+                        if v in version_line:
+                            result['evidence'].append(f"PHP {v} detected (vulnerable version)")
+
+                # Extract upload_progress status
+                if 'upload progress:' in text:
+                    if 'upload progress: on' in text or 'upload_progress: on' in text:
+                        result['upload_progress_enabled'] = True
+                        result['evidence'].append("upload_progress: ON (VULNERABLE)")
+                    elif 'upload progress: false' in text or 'upload_progress: false' in text:
+                        result['upload_progress_enabled'] = False
+                        result['evidence'].append("upload_progress: OFF (MITIGATED)")
+
+                # Extract save handler
+                if 'save handler:' in text:
+                    start = text.find('save handler:')
+                    end = text.find('\n', start)
+                    handler_line = text[start:end]
+                    result['save_handler'] = handler_line.split(':')[-1].strip()
+                    result['evidence'].append(f"Found: {handler_line}")
+        except Exception as e:
+            result['evidence'].append(f"HTML parsing failed: {str(e)}")
+
         # Determine vulnerability status
         # Vulnerable if: upload_progress ON + vulnerable PHP version
         # At risk if: vulnerable PHP version but upload_progress OFF (mitigated)
