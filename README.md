@@ -323,6 +323,11 @@ grep EXPLOITABLE /tmp/privesc_research_*.log
 
 ## Reference
 
+**Original Research:**
 - Yuhang Wu, *phpaftershell* — https://depthfirst.com/research/phpaftershell
+- Mas Rian (sudo3rs), *php2shell* — https://github.com/masriyan/php2shell
+
+**This Toolkit:**
 - CVE-2026-126714 Analysis — See [VECTOR.md](VECTOR.md)
 - Exploitation Guide — See [EXPLOIT_TESTING.md](EXPLOIT_TESTING.md)
+- Archived Tools — See [archive/](archive/) directory for reference implementations
