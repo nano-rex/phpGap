@@ -3,9 +3,11 @@
  * phpaftershell-check.php  --  PHP session upload-progress exposure auditor
  *
  * Checks whether THIS PHP server matches the preconditions of the
- * "phpaftershell" session-splice class of bug (CVE-2026-126714 and the
- * earlier php2shell / upload-progress line of research by Yuhang Wu), and
- * reviews how much damage a hypothetical code-execution would do (blast
+ * "phpaftershell" session-splice class of bug, tracked under several IDs for
+ * the same session.upload_progress line of research (CVE-2026-126714, and the
+ * php2shell IDs CVE-2026-109618 / CVE-2026-109619; NVD may still return 0
+ * results for these during the advisory window), and reviews how much damage
+ * a hypothetical code-execution would do (blast
  * radius): what user PHP runs as, which dangerous functions are reachable,
  * open_basedir, session storage permissions, and session-fixation settings.
  *
@@ -60,7 +62,7 @@ $add = function (string $line = '') use (&$out) { $out[] = $line; };
 $warns = [];   // collected blast-radius warnings
 
 $add(str_repeat('=', 70));
-$add(' phpaftershell exposure check  (CVE-2026-126714, upload-progress splice)');
+$add(' phpaftershell exposure check  (CVE-2026-126714 / -109618 / -109619)');
 $add(' read-only config/version audit -- authorised testing only');
 $add(str_repeat('=', 70));
 
@@ -146,6 +148,12 @@ if (!$up_enabled) {
 }
 $add(' VERDICT: ' . $verdict);
 $add(str_repeat('-', 70));
+if ($up_enabled && !$up_cleanup) {
+    $warns[] = 'session.upload_progress.cleanup is Off: the progress entry (and '
+             . 'the window in which a poisoned sess_* file can be read) persists '
+             . 'longer, widening the race. cleanup=On (the default) narrows it but '
+             . 'is NOT a fix -- disable upload_progress instead.';
+}
 $add('');
 
 /* ====================================================================== *
@@ -242,8 +250,11 @@ if ($up_enabled && $all) {
 }
 
 $add(' Re-run after any PHP upgrade or php.ini change (8.2-8.6 are all affected).');
-$add(' Detection: watch access logs for POSTs carrying the multipart field');
-$add('   "' . $up_name . '" to endpoints that accept uploads -- that is the trigger.');
+$add(' Detection: in access logs, the trigger is a multipart POST that carries');
+$add('   the field "' . $up_name . '" to an upload endpoint. The poisoning');
+$add('   primitive also sends a PHPSESSID *form field* (not a cookie) to pin a');
+$add('   chosen session id -- a request with both a PHPSESSID body field and the');
+$add('   "' . $up_name . '" field, but no matching session cookie, is the signature.');
 
 if (!$cli && SELF_DELETE_HINT) {
     $self = $_SERVER['SCRIPT_FILENAME'] ?? __FILE__;
