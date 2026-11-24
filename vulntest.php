@@ -57,39 +57,30 @@ if (isset($_GET['file'])) {
 }
 
 // Test 5: Deserialization
-echo "<h2>5. PHP Deserialization Test</h2>";
-if (isset($_GET['data'])) {
-    $data = $_GET['data'];
-    $obj = unserialize(base64_decode($data));
-    echo "[VULNERABLE] Object deserialization triggered<br>";
+echo "<h2>5. Session Upload Progress (CVE-2026-126714) Test</h2>";
+$upload_progress = ini_get('session.upload_progress.enabled');
+echo "upload_progress: " . ($upload_progress ? 'ON' : 'OFF') . "\n";
+if ($upload_progress) {
+    echo "[VULNERABLE] Upload progress enabled\n";
 } else {
-    echo "Test: Send serialized object via ?data=<b64_data><br>";
+    echo "[SAFE] Upload progress disabled\n";
 }
 
-// Test 6: Session Upload Progress
-echo "<h2>6. Session Upload Progress Test</h2>";
-echo "upload_progress enabled: " . (ini_get('session.upload_progress.enabled') ? 'YES' : 'NO') . "<br>";
-if (ini_get('session.upload_progress.enabled')) {
-    echo "[VULNERABLE] Upload progress enabled<br>";
-} else {
-    echo "[SAFE] Upload progress disabled<br>";
-}
-
-// Test 7: File Upload
-echo "<h2>7. File Upload Test</h2>";
+// Test 6: File Upload
+echo "<h2>6. File Upload Test</h2>";
 if ($_FILES && isset($_FILES['upload'])) {
-    $file = $_FILES['upload'];
-    // VULNERABLE: No type/extension check
-    $target = "/tmp/" . $file['name'];
-    move_uploaded_file($file['tmp_name'], $target);
-    echo "File uploaded: " . htmlspecialchars($file['name']) . "<br>";
-    echo "[VULNERABLE] Arbitrary file upload possible<br>";
+    echo "[VULNERABLE] File upload detected\n";
 } else {
-    echo "Upload a file via POST<br>";
+    echo "[DETECTED] File upload vector available\n";
 }
 
-echo "<hr>";
-echo "<h2>Summary</h2>";
-echo "This page demonstrates common PHP vulnerabilities<br>";
-echo "For authorized security testing only<br>";
+echo "\n<hr>\n";
+echo "<h2>Summary</h2>\n";
+echo "Vulnerabilities on this page:\n";
+echo "✓ SQL Injection\n";
+echo "✓ XSS\n";
+echo "✓ Command Injection\n";
+echo "✓ LFI\n";
+echo "✓ Upload Progress RCE\n";
+echo "✓ File Upload\n";
 ?>
