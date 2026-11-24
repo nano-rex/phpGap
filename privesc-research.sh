@@ -442,7 +442,7 @@ scan_cron_jobs() {
     fi
 
     # Check for cron jobs that execute world-writable scripts
-    for cronfile in /var/spool/cron/crontabs/* /etc/cron.d/* 2>/dev/null; do
+    for cronfile in $(find /var/spool/cron/crontabs /etc/cron.d -type f 2>/dev/null); do
         if [ -f "$cronfile" ]; then
             local scripts=$(grep -oE '(^|[[:space:]])(.*\.sh|/[^[:space:]]+)' "$cronfile" 2>/dev/null)
             while read -r script; do
