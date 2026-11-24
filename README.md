@@ -100,6 +100,26 @@ The verdict is one of **MITIGATED** (upload progress off), **EXPOSED** (all
 preconditions met), or a reduced-risk / likely-safe variant, with remediation
 steps when it matters.
 
+### Scan several servers at once
+
+`scan-servers.sh` runs the checker over SSH on a list of your servers (CLI mode)
+and prints a one-line verdict per host:
+
+```bash
+./scan-servers.sh user@web1 user@web2:2222
+./scan-servers.sh -f hosts.txt        # one [user@]host[:port] per line, # comments ok
+```
+
+It uses your normal SSH config/keys and leaves nothing behind. CLI mode reads
+each server's CLI php.ini, so confirm anything it flags with a real web run.
+
+## How the attack works
+
+See [VECTOR.md](VECTOR.md) for a defender's walkthrough of the splice — what the
+trigger request looks like, why the non-atomic write splices the session file,
+what each precondition and each hardening check maps to, and the real impact
+ceiling. It contains no exploit or payload.
+
 ## Remediation (if EXPOSED)
 
 1. **Turn off the trigger** — the mitigation you can apply right now:

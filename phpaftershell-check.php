@@ -4,11 +4,15 @@
  *
  * Checks whether THIS PHP server matches the preconditions of the
  * "phpaftershell" session-splice class of bug (CVE-2026-126714 and the
- * earlier php2shell / upload-progress line of research by Yuhang Wu).
+ * earlier php2shell / upload-progress line of research by Yuhang Wu), and
+ * reviews how much damage a hypothetical code-execution would do (blast
+ * radius): what user PHP runs as, which dangerous functions are reachable,
+ * open_basedir, session storage permissions, and session-fixation settings.
  *
  * It is a READ-ONLY configuration and version audit. It does NOT attempt the
- * splice race, does not corrupt anything, and contains no exploit. Run it only
- * on a server you own or are authorised to test.
+ * splice race, sends no payloads, deserializes nothing, and contains no
+ * exploit. Run it only on a server you own or are authorised to test.
+ * See VECTOR.md for how the attack works and why each check is here.
  *
  * Two ways to run:
  *   - Web (authoritative): copy to your docroot, open it in a browser, then
@@ -49,115 +53,203 @@ if (!$cli) {
 
 function ini_str($k) { $v = ini_get($k); return ($v === false) ? '(unset)' : $v; }
 function ini_on($k)  { return filter_var(ini_get($k), FILTER_VALIDATE_BOOL); }
+function yn($b)      { return $b ? 'yes' : 'no'; }
 
 $out = [];
-$out[] = str_repeat('=', 68);
-$out[] = ' phpaftershell exposure check  (CVE-2026-126714, upload-progress splice)';
-$out[] = str_repeat('=', 68);
-$out[] = sprintf(' PHP            %s  (id %d)', PHP_VERSION, PHP_VERSION_ID);
-$out[] = sprintf(' SAPI           %s%s', PHP_SAPI,
-        $cli ? '   <-- CLI ini; the web server (fpm/mod_php) may differ!' : '');
-$out[] = sprintf(' Server         %s', $_SERVER['SERVER_SOFTWARE'] ?? php_uname('n'));
-$out[] = '';
+$add = function (string $line = '') use (&$out) { $out[] = $line; };
+$warns = [];   // collected blast-radius warnings
 
-/* ---- the settings that matter ---------------------------------------- */
+$add(str_repeat('=', 70));
+$add(' phpaftershell exposure check  (CVE-2026-126714, upload-progress splice)');
+$add(' read-only config/version audit -- authorised testing only');
+$add(str_repeat('=', 70));
+
+/* ---- who/what -------------------------------------------------------- */
+$euid = function_exists('posix_geteuid') ? posix_geteuid() : null;
+$uname = null;
+if ($euid !== null && function_exists('posix_getpwuid')) {
+    $pw = posix_getpwuid($euid);
+    $uname = $pw['name'] ?? (string) $euid;
+} else {
+    $uname = get_current_user() ?: '(unknown)';
+}
+$add(sprintf(' PHP            %s  (id %d)', PHP_VERSION, PHP_VERSION_ID));
+$add(sprintf(' SAPI           %s%s', PHP_SAPI,
+        $cli ? '   <-- CLI ini; the web server (fpm/mod_php) may differ!' : ''));
+$add(sprintf(' Server         %s', $_SERVER['SERVER_SOFTWARE'] ?? php_uname('n')));
+$add(sprintf(' Running as     %s%s', $uname,
+        ($euid === 0) ? '   <-- PHP RUNS AS ROOT' : (($euid !== null) ? " (uid $euid)" : '')));
+if ($euid === 0) {
+    $warns[] = 'PHP is running as root: ANY code-execution bug becomes instant '
+             . 'root. Run php-fpm/the web server as an unprivileged user.';
+}
+$add('');
+
+/* ====================================================================== *
+ * 1) Upload-progress splice preconditions
+ * ====================================================================== */
 $save_handler = ini_str('session.save_handler');
 $serializer   = ini_str('session.serialize_handler');
-$save_path     = ini_str('session.save_path');
+$save_path     = ini_get('session.save_path') ?: '';
 $up_enabled   = ini_on('session.upload_progress.enabled');
 $up_name      = ini_str('session.upload_progress.name');
 $up_prefix    = ini_str('session.upload_progress.prefix');
 $up_cleanup   = ini_on('session.upload_progress.cleanup');
 
-$out[] = ' Relevant php.ini (as this SAPI sees it):';
-$out[] = sprintf('   session.save_handler              %s', $save_handler);
-$out[] = sprintf('   session.serialize_handler         %s', $serializer);
-$out[] = sprintf('   session.save_path                 %s', $save_path);
-$out[] = sprintf('   session.upload_progress.enabled   %s', $up_enabled ? 'On' : 'Off');
-$out[] = sprintf('   session.upload_progress.name      %s', $up_name);
-$out[] = sprintf('   session.upload_progress.prefix    %s', $up_prefix);
-$out[] = sprintf('   session.upload_progress.cleanup   %s', $up_cleanup ? 'On' : 'Off');
-$out[] = '';
+$add(' [1] Upload-progress splice preconditions');
+$add(sprintf('   session.save_handler              %s', $save_handler));
+$add(sprintf('   session.serialize_handler         %s', $serializer));
+$add(sprintf('   session.save_path                 %s', $save_path !== '' ? $save_path : '(default)'));
+$add(sprintf('   session.upload_progress.enabled   %s', $up_enabled ? 'On' : 'Off'));
+$add(sprintf('   session.upload_progress.name      %s', $up_name));
+$add(sprintf('   session.upload_progress.prefix    %s', $up_prefix));
+$add(sprintf('   session.upload_progress.cleanup   %s', $up_cleanup ? 'On' : 'Off'));
+$add('');
 
-/* ---- precondition logic ---------------------------------------------- */
-// The bug needs the file-backed session store, the concatenated "key|value"
-// serializer (php / php_binary -- php_serialize uses a different format), and
-// the upload-progress callback actually running.
 $cond = [];
 $cond['upload progress enabled (the trigger)'] = $up_enabled;
 $cond['session.save_handler = files']          = (strtolower($save_handler) === 'files');
 $cond['serializer is php / php_binary']        = in_array(strtolower($serializer), ['php', 'php_binary'], true);
 
-// Version. Per the Nov 2026 write-up essentially all of 8.2+ is affected
-// (original path, plus Variant A/B after the php2shell fix). 7.4/8.0/8.1 are
-// safe ONLY in the official EOL mitigation builds; unpatched ones keep the
-// vulnerable path. Downstream distros may backport a fix without bumping
-// PHP_VERSION, so version alone is advisory.
 $vid = PHP_VERSION_ID;
 if ($vid >= 80200) {
     $ver_affected = true;
     $ver_note = 'PHP >= 8.2: listed as affected (original and/or Variant A/B).';
 } elseif ($vid >= 70400) {
-    $ver_affected = true; // can't prove it's a mitigation build from the version
+    $ver_affected = true;
     $ver_note = 'PHP 7.4/8.0/8.1: safe ONLY if this is an official EOL '
               . 'upload-progress-mitigation build; unpatched builds are affected.';
 } else {
     $ver_affected = false;
-    $ver_note = 'Below 7.4: this specific research does not apply (but is EOL/unsupported).';
+    $ver_note = 'Below 7.4: this specific research does not apply (but is EOL).';
 }
 $cond['PHP version in the affected set'] = $ver_affected;
 
-$out[] = ' Preconditions for the upload-progress splice vector:';
 foreach ($cond as $label => $ok) {
-    $out[] = sprintf('   [%s] %s', $ok ? 'x' : ' ', $label);
+    $add(sprintf('   [%s] %s', $ok ? 'x' : ' ', $label));
 }
-$out[] = '   note: ' . $ver_note;
-$out[] = '';
+$add('   note: ' . $ver_note);
+$add('');
 
-/* ---- verdict --------------------------------------------------------- */
 $all = !in_array(false, $cond, true);
-$out[] = str_repeat('-', 68);
+$add(str_repeat('-', 70));
 if (!$up_enabled) {
     $verdict = 'MITIGATED (upload progress is disabled -> callback never runs)';
 } elseif ($all) {
     $verdict = 'EXPOSED: this server matches every precondition of the vector';
 } elseif (!$cond['session.save_handler = files']) {
-    $verdict = 'LIKELY SAFE from this vector: sessions are not file-backed ('
-             . $save_handler . ')';
+    $verdict = 'LIKELY SAFE from this vector: sessions are not file-backed (' . $save_handler . ')';
 } elseif (!$cond['serializer is php / php_binary']) {
-    $verdict = 'REDUCED RISK: serializer "' . $serializer . '" is not the '
-             . 'spliceable key|value format (keep an eye on it anyway)';
+    $verdict = 'REDUCED RISK: serializer "' . $serializer . '" is not the spliceable key|value format';
 } else {
     $verdict = 'LIKELY SAFE from this vector (a precondition is not met)';
 }
-$out[] = ' VERDICT: ' . $verdict;
-$out[] = str_repeat('-', 68);
-$out[] = '';
+$add(' VERDICT: ' . $verdict);
+$add(str_repeat('-', 70));
+$add('');
 
-/* ---- remediation ----------------------------------------------------- */
-if ($up_enabled && $all) {
-    $out[] = ' What to do:';
-    $out[] = '  1. Primary mitigation you can apply now -- turn off the trigger:';
-    $out[] = '         session.upload_progress.enabled = Off';
-    $out[] = '     (set it in php.ini / the fpm pool, then reload php-fpm). Only';
-    $out[] = '     disables upload-progress reporting, which most apps do not use.';
-    $out[] = '  2. If you need upload progress, move sessions off the files handler';
-    $out[] = '     (redis / memcached), or use session.serialize_handler = php_serialize,';
-    $out[] = '     which does not use the spliceable key|value format.';
-    $out[] = '  3. Track and apply the upstream PHP fix';
-    $out[] = '     (php-src commit c2b02f24dffae346eef347db8a3323fbbe0f43fa';
-    $out[] = '      reorders the truncate/write), then re-run this check.';
-    $out[] = '  4. Harden session files: non-world-readable save_path on its own';
-    $out[] = '     mount, and cap request time/memory so workers are less likely to';
-    $out[] = '     be killed mid-write.';
-    $out[] = '';
+/* ====================================================================== *
+ * 2) Session-fixation surface (does the splice vector have a way in?)
+ * ====================================================================== */
+$strict   = ini_on('session.use_strict_mode');
+$httponly = ini_on('session.cookie_httponly');
+$secure   = ini_on('session.cookie_secure');
+$add(' [2] Session-targeting surface');
+$add(sprintf('   session.use_strict_mode           %s %s', $strict ? 'On' : 'Off',
+        $strict ? '' : '<-- attacker can pin a known session id'));
+$add(sprintf('   session.cookie_httponly           %s', $httponly ? 'On' : 'Off'));
+$add(sprintf('   session.cookie_secure             %s', $secure ? 'On' : 'Off'));
+if (!$strict) {
+    $warns[] = 'session.use_strict_mode is Off: an attacker can choose the '
+             . 'session id, which makes aiming a splice at a victim easier. Set it On.';
 }
+$add('');
+
+/* ====================================================================== *
+ * 3) Blast radius -- how bad a hypothetical code-exec would be
+ * ====================================================================== */
+$add(' [3] Blast radius (how contained a hypothetical code-exec would be)');
+
+// dangerous functions reachable?
+$danger = ['system','exec','shell_exec','passthru','proc_open','popen','pcntl_exec'];
+$disabled = array_filter(array_map('trim', explode(',', (string) ini_get('disable_functions'))));
+$reachable = [];
+foreach ($danger as $fn) {
+    if (!in_array($fn, $disabled, true) && function_exists($fn)) { $reachable[] = $fn; }
+}
+$add(sprintf('   disable_functions                 %s', $disabled ? implode(',', $disabled) : '(none)'));
+$add(sprintf('   command-exec functions reachable  %s', $reachable ? implode(',', $reachable) : 'none'));
+if ($reachable) {
+    $warns[] = 'Command-exec functions are reachable (' . implode(',', $reachable)
+             . '). If you do not need them, add them to disable_functions.';
+}
+
+// open_basedir
+$obd = ini_get('open_basedir');
+$add(sprintf('   open_basedir                      %s', $obd ?: '(not set)'));
+if (!$obd) {
+    $warns[] = 'open_basedir is not set: PHP can read/write anywhere the web '
+             . 'user can. Pin it to each site docroot (+ its tmp).';
+}
+
+// allow_url_include (the dangerous one) / allow_url_fopen
+$aui = ini_on('allow_url_include');
+$add(sprintf('   allow_url_include                 %s %s', $aui ? 'On' : 'Off', $aui ? '<-- remote code include!' : ''));
+if ($aui) { $warns[] = 'allow_url_include is On: turn it Off (remote file inclusion -> RCE).'; }
+
+// info leaks
+$add(sprintf('   expose_php                        %s', ini_on('expose_php') ? 'On (leaks version)' : 'Off'));
+$add(sprintf('   display_errors                    %s', ini_on('display_errors') ? 'On (leaks paths/data)' : 'Off'));
+if (ini_on('display_errors') && !$cli) {
+    $warns[] = 'display_errors is On for the web SAPI: turn it Off in production.';
+}
+
+// session storage permissions (tells you who else can read sess_* files)
+if ($save_path !== '') {
+    $sp = $save_path;
+    if (strpos($sp, ';') !== false) { $sp = substr($sp, strrpos($sp, ';') + 1); } // "N;/path"
+    $st = @stat($sp);
+    if ($st !== false) {
+        $mode = $st['mode'] & 0777;
+        $add(sprintf('   session.save_path perms           %s on %s', sprintf('%04o', $mode), $sp));
+        if ($mode & 0004) { $warns[] = "session.save_path ($sp) is world-readable: other local users can read sess_* files. chmod 0700 and own it by the web user."; }
+        if ($mode & 0002) { $warns[] = "session.save_path ($sp) is world-writable."; }
+        if ($sp === sys_get_temp_dir() || $sp === '/tmp') { $warns[] = "sessions are stored in a shared temp dir ($sp): use a private per-app directory."; }
+    } else {
+        $add(sprintf('   session.save_path perms           (could not stat %s -- open_basedir?)', $sp));
+    }
+}
+$add('');
+
+/* ====================================================================== *
+ * Warnings summary + remediation
+ * ====================================================================== */
+if ($warns) {
+    $add(' Hardening findings:');
+    foreach ($warns as $i => $w) { $add(sprintf('   %d. %s', $i + 1, $w)); }
+    $add('');
+}
+
+if ($up_enabled && $all) {
+    $add(' Fix the splice vector:');
+    $add('   1. Turn off the trigger now:  session.upload_progress.enabled = Off');
+    $add('      (php.ini / the fpm pool, then reload php-fpm). Most apps do not use it.');
+    $add('   2. Or move sessions off files (redis/memcached), or set');
+    $add('      session.serialize_handler = php_serialize (not the spliceable format).');
+    $add('   3. Apply the upstream fix (php-src commit');
+    $add('      c2b02f24dffae346eef347db8a3323fbbe0f43fa) and re-run this check.');
+    $add('');
+}
+
+$add(' Re-run after any PHP upgrade or php.ini change (8.2-8.6 are all affected).');
+$add(' Detection: watch access logs for POSTs carrying the multipart field');
+$add('   "' . $up_name . '" to endpoints that accept uploads -- that is the trigger.');
 
 if (!$cli && SELF_DELETE_HINT) {
     $self = $_SERVER['SCRIPT_FILENAME'] ?? __FILE__;
-    $out[] = ' REMINDER: delete this file now -- it reports your config:';
-    $out[] = '     rm ' . $self;
-    $out[] = '';
+    $add('');
+    $add(' REMINDER: delete this file now -- it reports your config:');
+    $add('     rm ' . $self);
 }
 
 echo implode("\n", $out), "\n";
